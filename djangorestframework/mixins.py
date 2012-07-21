@@ -78,6 +78,88 @@ class ResponseMixin(object):
     Should be a tuple/list of classes as described in the :mod:`renderers` module.
     """
 
+    def get_renderers(self):
+        """
+        Return an iterable of available renderers. Override if you want to change
+        this list at runtime, say depending on what settings you have enabled.
+        """
+        return self.renderers
+
+    # TODO: wrap this behavior around dispatch(), ensuring it works
+    # out of the box with existing Django classes that use render_to_response.
+    def render(self, response):
+        """
+        Takes a :obj:`Response` object and returns an :obj:`HttpResponse`.
+        """
+        self.response = response
+
+        try:
+            renderer, media_type = self._determine_renderer(self.request)
+        except ErrorResponse, exc:
+            renderer = self._default_renderer(self)
+            media_type = renderer.media_type
+            response = exc.response
+
+        # Set the media type of the response
+        # Note that the renderer *could* override it in .render() if required.
+        response.media_type = renderer.media_type
+
+        # Serialize the response content
+        if response.has_content_body:
+            content = renderer.render(response.cleaned_content, media_type)
+        else:
+            content = renderer.render()
+
+        # Build the HTTP Response
+        resp = HttpResponse(content, mimetype=response.media_type, status=response.status)
+        for (key, val) in response.headers.items():
+            resp[key] = val
+
+        return resp
+
+    def _determine_renderer(self, request):
+        """
+        Determines the appropriate renderer for the output, given the client's 'Accept' header,
+        and the :attr:`renderers` set on this class.
+
+        Returns a 2-tuple of `(renderer, media_type)`
+
+        See: RFC 2616, Section 14 - http://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html
+        """
+
+        if self._ACCEPT_QUERY_PARAM and request.GET.get(self._ACCEPT_QUERY_PARAM, None):
+            # Use _accept parameter override
+            accept_list = [request.GET.get(self._ACCEPT_QUERY_PARAM)]
+        elif (self._IGNORE_IE_ACCEPT_HEADER and
+              'HTTP_USER_AGENT' in request.META and
+              MSIE_USER_AGENT_REGEX.match(request.META['HTTP_USER_AGENT']) and
+              request.META.get('HTTP_X_REQUESTED_WITH', '') != 'XMLHttpRequest'):
+            # Ignore MSIE's broken accept behavior and do something sensible instead
+            accept_list = ['text/html', '*/*']
+        elif 'HTTP_ACCEPT' in request.META:
+            # Use standard HTTP Accept negotiation
+            accept_list = [token.strip() for token in request.META['HTTP_ACCEPT'].split(',')]
+        else:
+            # No accept header specified
+            accept_list = ['*/*']
+
+        # Check the acceptable media types against each renderer,
+        # attempting more specific media types first
+        # NB. The inner loop here isn't as bad as it first looks :)
+        #     Worst case is we're looping over len(accept_list) * len(self.renderers)
+        renderers = [renderer_cls(self) for renderer_cls in self.get_renderers()]
+
+        for accepted_media_type_lst in order_by_precedence(accept_list):
+            for renderer in renderers:
+                for accepted_media_type in accepted_media_type_lst:
+                    if renderer.can_handle_response(accepted_media_type):
+                        return renderer, accepted_media_type
+
+        # No acceptable renderers were found
+        raise ErrorResponse(status.HTTP_406_NOT_ACCEPTABLE,
+                                {'detail': 'Could not satisfy the client\'s Accept header',
+                                 'available_types': self._rendered_media_types})
+
     @property
     def _rendered_media_types(self):
         """
