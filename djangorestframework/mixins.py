@@ -504,6 +504,13 @@ class ModelMixin(object):
 
         return all_kw_args
 
+    def get_save_kwargs(self):
+        """
+        Return a dict of kwargs that will be used to save the
+        model instance.
+        """
+        return {}
+    
     def get_instance(self, **kwargs):
         """
         Get a model instance for read/update/delete requests.
@@ -559,7 +566,8 @@ class CreateModelMixin(ModelMixin):
                 del content[field.name]
 
         instance = model(**self.get_instance_data(model, content, *args, **kwargs))
-        instance.save()
+        save_kwargs = self.get_save_kwargs()
+        instance.save(**save_kwargs)
 
         for fieldname in m2m_data:
             manager = getattr(instance, fieldname)
@@ -597,7 +605,9 @@ class UpdateModelMixin(ModelMixin):
                 setattr(self.model_instance, key, val)
         except model.DoesNotExist:
             self.model_instance = model(**self.get_instance_data(model, self.CONTENT, *args, **kwargs))
-        self.model_instance.save()
+
+        save_kwargs = self.get_save_kwargs()
+        self.model_instance.save(**save_kwargs)
         return self.model_instance
 
 
